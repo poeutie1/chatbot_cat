@@ -1,26 +1,36 @@
-// ↓ any はこのファイルだけで許可
+/* app/api/webhook/route.ts */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { NextResponse } from "next/server";
 import { middleware, Client, WebhookEvent } from "@line/bot-sdk";
 import fs from "fs";
 import path from "path";
 
 export const runtime = "nodejs";
+
 const config = {
   channelSecret: process.env.LINE_CHANNEL_SECRET!,
   channelAccessToken: process.env.LINE_CHANNEL_TOKEN!,
 };
 const client = new Client(config);
 
+// GET リクエスト（Webhook 検証）には 200 を返す
 export async function GET() {
   return new NextResponse(null, { status: 200 });
 }
 
+// POST リクエスト（実際のメッセージ受信時）の処理
 export async function POST(request: Request) {
+  // ① ヘッダーとボディをログで確認
+  console.log("Headers:", [...request.headers.entries()]);
   const body = await request.text();
-  const signature = request.headers.get("x-line-signature") || "";
+  console.log("Request body:", body);
 
-  // テスト用: 署名がない場合は検証をスキップ
+  // ② 署名ヘッダーの取得
+  const signature = request.headers.get("x-line-signature");
+  console.log("Signature header:", signature);
+
+  // ③ 署名がある場合のみ検証
   if (signature) {
     try {
       await new Promise<void>((resolve, reject) =>
@@ -30,26 +40,31 @@ export async function POST(request: Request) {
           (err: any) => (err ? reject(err) : resolve())
         )
       );
+      console.log("✅ Signature validated");
     } catch (err) {
-      console.error("Signature validation failed:", err);
-      return new NextResponse(null, { status: 400 }); // 本番ではエラー返却も検討
+      console.error("❌ Signature validation failed:", err);
+      // 本番ではここで return new NextResponse(null, { status: 400 }) も検討
     }
   } else {
-    console.log("No signature: skipping middleware (test mode)");
+    console.log("⚠️ No signature — skipping validation (test mode)");
   }
 
-  console.log("Webhook received. signature:", signature);
-  console.log("Request body:", body);
-
+  // ④ イベント処理と返信
   try {
     const { events } = JSON.parse(body) as { events: WebhookEvent[] };
+    console.log("Events:", events);
+
     await Promise.all(
       events.map(async (event) => {
-        if (event.type !== "message" || event.message.type !== "text") return;
+        if (event.type !== "message" || event.message.type !== "text") {
+          console.log("Skipping event type:", event.type);
+          return;
+        }
+
         const name = event.message.text.trim();
         console.log("Requested folder:", name);
 
-        const dir = path.join(process.cwd(), "public/images", name);
+        const dir = path.join(process.cwd(), "public", "images", name);
         if (!fs.existsSync(dir)) {
           console.log("Folder not found:", dir);
           await client.replyMessage(event.replyToken, {
@@ -88,5 +103,6 @@ export async function POST(request: Request) {
     console.error("Event processing error:", err);
   }
 
+  // ⑤ 例外の有無にかかわらず 200 を返す
   return new NextResponse(null, { status: 200 });
 }
